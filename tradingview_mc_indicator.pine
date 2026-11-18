@@ -1,0 +1,37 @@
+//@version=6
+indicator("MC Candle | 3-Day Close Bias + Webhook", overlay = true, max_labels_count = 500)
+
+// Use ONLY on a 4-hour chart. Every completed bar sends OHLC to Python,
+// whether or not it is an MC. Python needs the bars to build its history.
+int biasBars = input.int(18, "Bias window (4H candles)", minval = 2, maxval = 100)
+bool showBias = input.bool(true, "Color chart background by bias")
+bool isFourHour = timeframe.isminutes and timeframe.multiplier == 240
+int barMs = 4 * 60 * 60 * 1000
+
+// Exclude the previous candle and current candle from bias: compare closes
+// at [biasBars + 1] (oldest) and [2] (newest).
+bool ready = isFourHour and not na(close[biasBars + 1])
+bool consecutive = ready
+if ready
+    for i = 0 to biasBars
+        if na(time[i + 1]) or time[i] - time[i + 1] != barMs
+            consecutive := false
+
+bool bullishBias = consecutive and close[2] > close[biasBars + 1]
+bool bearishBias = consecutive and close[2] < close[biasBars + 1]
+
+// User-specified conditions: full-range engulfing and body-color filters
+// are NOT required.
+bool bullishMC = barstate.isconfirmed and bullishBias and low < low[1] and close > close[1]
+bool bearishMC = barstate.isconfirmed and bearishBias and high > high[1] and close < close[1]
+
+plotshape(bullishMC, title = "Bullish MC", style = shape.labelup, location = location.belowbar, color = color.lime, text = "MC ▲", textcolor = color.black, size = size.tiny)
+plotshape(bearishMC, title = "Bearish MC", style = shape.labeldown, location = location.abovebar, color = color.red, text = "MC ▼", textcolor = color.white, size = size.tiny)
+bgcolor(showBias and bullishBias ? color.new(color.green, 94) : showBias and bearishBias ? color.new(color.red, 94) : na)
+
+// One webhook per completed candle, not only MC candles. The Python service
+// validates and detects MC itself; this keeps its history synchronized.
+if barstate.isconfirmed and isFourHour
+    string isoTime = str.replace_all(str.format_time(time, "yyyy-MM-dd HH:mm:ss", "UTC+0"), " ", "T") + "Z"
+    string payload = '{"symbol":"' + syminfo.tickerid + '","timeframe":"4h","timestamp":"' + isoTime + '","open":' + str.tostring(open, format.mintick) + ',"high":' + str.tostring(high, format.mintick) + ',"low":' + str.tostring(low, format.mintick) + ',"close":' + str.tostring(close, format.mintick) + '}'
+    alert(payload, alert.freq_once_per_bar_close)
