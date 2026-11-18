@@ -1,45 +1,138 @@
-//@version=6
-indicator("MC Candle Alerts (4H)", overlay = true, max_labels_count = 500)
 
-// Strategy: compare first and last closes in 18 earlier four-hour bars.
-// Exclude both the current signal candle and its immediate predecessor.
-int biasBars = input.int(18, "3-day bias bars", minval = 2, maxval = 100)
-bool showBias = input.bool(true, "Show bias background")
-bool enableBullish = input.bool(true, "Enable bullish MC alerts")
-bool enableBearish = input.bool(true, "Enable bearish MC alerts")
+ //@version=6
+indicator("MC Candle — 4H Alert", overlay=true)
 
-bool correctTimeframe = timeframe.isminutes and timeframe.multiplier == 240
-int fourHoursMs = 4 * 60 * 60 * 1000
-bool enoughBars = correctTimeframe and not na(close[biasBars + 1])
-bool consecutive = enoughBars
+// ==========================================
+// SETTINGS
+// ==========================================
 
-// Keep the exact 4-hour continuity requirement from the earlier version.
-// Forex/stock market session breaks temporarily disable signals.
-if enoughBars
-    for i = 0 to biasBars
-        if na(time[i + 1]) or time[i] - time[i + 1] != fourHoursMs
-            consecutive := false
+biasBars = input.int(18, "Bias Period (4H Candles)", minval=2)
 
-bool bullishBias = consecutive and close[2] > close[biasBars + 1]
-bool bearishBias = consecutive and close[2] < close[biasBars + 1]
+enableBull = input.bool(true, "Enable Bullish Alerts")
+enableBear = input.bool(true, "Enable Bearish Alerts")
+showBias = input.bool(false, "Show Bias Background")
 
-// Only the wick break and close reversal specified by the user.
-// No full-range engulfing or candle-body-color requirement.
-bool bullishMC = barstate.isconfirmed and bullishBias and low < low[1] and close > close[1]
-bool bearishMC = barstate.isconfirmed and bearishBias and high > high[1] and close < close[1]
+// ==========================================
+// MARKET BIAS
+// ==========================================
 
-plotshape(bullishMC, title = "Bullish MC", style = shape.labelup, location = location.belowbar, color = color.lime, text = "MC ▲", textcolor = color.black, size = size.tiny)
-plotshape(bearishMC, title = "Bearish MC", style = shape.labeldown, location = location.abovebar, color = color.red, text = "MC ▼", textcolor = color.white, size = size.tiny)
-bgcolor(showBias and bullishBias ? color.new(color.green, 94) : showBias and bearishBias ? color.new(color.red, 94) : na)
+// Only operate on 4-hour charts
+is4H = timeframe.isminutes and timeframe.multiplier == 240
 
-// Can be selected independently from TradingView's alert creation dialog.
-alertcondition(enableBullish and bullishMC, title = "Bullish MC", message = "BULLISH MC | {{ticker}} | 4H | Close: {{close}}")
-alertcondition(enableBearish and bearishMC, title = "Bearish MC", message = "BEARISH MC | {{ticker}} | 4H | Close: {{close}}")
+// Require sufficient history and candle confirmation
+ready = is4H and not na(close[biasBars]) and barstate.isconfirmed
 
-// Select 'Any alert() function call' for one combined dynamic JSON alert.
-// Sends ONLY when an MC is detected, never on normal candles.
-if (enableBullish and bullishMC) or (enableBearish and bearishMC)
-    string direction = bullishMC ? "bullish" : "bearish"
-    string isoTime = str.replace_all(str.format_time(time, "yyyy-MM-dd HH:mm:ss", "UTC+0"), " ", "T") + "Z"
-    string payload = '{"event":"mc_candle","direction":"' + direction + '","symbol":"' + syminfo.tickerid + '","timeframe":"4h","timestamp":"' + isoTime + '","open":' + str.tostring(open, format.mintick) + ',"high":' + str.tostring(high, format.mintick) + ',"low":' + str.tostring(low, format.mintick) + ',"close":' + str.tostring(close, format.mintick) + '}'
-    alert(payload, alert.freq_once_per_bar_close)
+// Compare first and last closes of previous 18 candles
+bullBias = ready and close[1] > close[biasBars]
+bearBias = ready and close[1] < close[biasBars]
+
+// ==========================================
+// CANDLE DIRECTIONS
+// ==========================================
+
+// Current candle direction
+currentBull = close > open
+currentBear = close < open
+
+// Previous candle direction
+previousBull = close[1] > open[1]
+previousBear = close[1] < open[1]
+
+// ==========================================
+// MC CANDLE DETECTION
+// ==========================================
+
+// BULLISH MC CONDITIONS:
+// 1. Bullish market bias
+// 2. Previous candle is bullish
+// 3. Current candle is bullish
+// 4. Current low breaks previous low
+// 5. Current close exceeds previous candle body
+
+bullMC = bullBias and
+     previousBull and
+     currentBull and
+     low < low[1] and
+     close > math.max(open[1], close[1])
+
+// BEARISH MC CONDITIONS:
+// 1. Bearish market bias
+// 2. Previous candle is bearish
+// 3. Current candle is bearish
+// 4. Current high breaks previous high
+// 5. Current close falls below previous candle body
+
+bearMC = bearBias and
+     previousBear and
+     currentBear and
+     high > high[1] and
+     close < math.min(open[1], close[1])
+
+// ==========================================
+// CHART LABELS
+// ==========================================
+
+plotshape(
+     bullMC,
+     title="Bullish MC",
+     style=shape.labelup,
+     location=location.belowbar,
+     offset=0,
+     color=color.lime,
+     text="MC BUY",
+     textcolor=color.black,
+     size=size.tiny)
+
+plotshape(
+     bearMC,
+     title="Bearish MC",
+     style=shape.labeldown,
+     location=location.abovebar,
+     offset=0,
+     color=color.red,
+     text="MC SELL",
+     textcolor=color.white,
+     size=size.tiny)
+
+// ==========================================
+// MARKET BIAS BACKGROUND
+// ==========================================
+
+bgcolor(
+     showBias and bullBias ? color.new(color.green, 93) :
+     showBias and bearBias ? color.new(color.red, 93) :
+     na)
+
+// ==========================================
+// TRADINGVIEW ALERT CONDITIONS
+// ==========================================
+
+alertcondition(
+     enableBull and bullMC,
+     title="Bullish MC",
+     message="Bullish MC detected on {{ticker}} | 4H | Close: {{close}}")
+
+alertcondition(
+     enableBear and bearMC,
+     title="Bearish MC",
+     message="Bearish MC detected on {{ticker}} | 4H | Close: {{close}}")
+
+// ==========================================
+// COMBINED WEBHOOK ALERT
+// ==========================================
+
+if (enableBull and bullMC) or (enableBear and bearMC)
+
+    direction = bullMC ? "bullish" : "bearish"
+
+    message = '{"event":"mc_candle",' +
+         '"symbol":"' + syminfo.tickerid + '",' +
+         '"direction":"' + direction + '",' +
+         '"timeframe":"4h",' +
+         '"open":' + str.tostring(open, format.mintick) + ',' +
+         '"high":' + str.tostring(high, format.mintick) + ',' +
+         '"low":' + str.tostring(low, format.mintick) + ',' +
+         '"close":' + str.tostring(close, format.mintick) +
+         '}'
+
+    alert(message, alert.freq_once_per_bar_close)
