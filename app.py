@@ -5,7 +5,7 @@ import logging
 import os
 import sqlite3
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -45,11 +45,16 @@ class Candle(BaseModel):
         return self
 
 
+@contextmanager
 def connect():
     conn = sqlite3.connect(DATABASE_PATH, timeout=30)
     conn.execute("PRAGMA busy_timeout=30000")
     conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def init_db():
