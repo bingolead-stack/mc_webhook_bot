@@ -1,6 +1,7 @@
 """Concurrent 4h OHLC webhook receiver with a durable Telegram alert outbox."""
 
 import asyncio
+import json
 import logging
 import os
 import sqlite3
@@ -12,8 +13,8 @@ from typing import Literal
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, Query
-from pydantic import BaseModel, Field, model_validator
+from fastapi import FastAPI, Header, HTTPException, Query, Request
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -23,10 +24,12 @@ DATABASE_PATH = os.getenv("DATABASE_PATH", "mc_bot.sqlite3")
 BIAS_CANDLES = max(2, int(os.getenv("BIAS_CANDLES", "18")))
 POLL_SECONDS = max(0.1, float(os.getenv("WORKER_POLL_SECONDS", "1")))
 FOUR_HOURS = 4 * 60 * 60
+# TradingView can mark a bar confirmed slightly before its mathematical close.
+CLOSE_GRACE_SECONDS = 120
 
 
 class Candle(BaseModel):
-    symbol: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_./:-]+$")
+    symbol: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9_./:!+-]+$")
     timestamp: datetime  # OPEN time of a completed 4h candle; must contain timezone
     open: float = Field(ge=0)
     high: float = Field(ge=0)
@@ -40,7 +43,7 @@ class Candle(BaseModel):
             raise ValueError("timestamp must include a timezone (e.g. Z)")
         if self.low > self.high or not self.low <= self.open <= self.high or not self.low <= self.close <= self.high:
             raise ValueError("OHLC values are inconsistent")
-        if self.timestamp.timestamp() + FOUR_HOURS > time.time() + 5:
+        if self.timestamp.timestamp() + FOUR_HOURS > time.time() + CLOSE_GRACE_SECONDS:
             raise ValueError("only completed 4-hour candles are accepted")
         return self
 
@@ -201,12 +204,24 @@ async def health():
 
 
 @app.post("/webhook")
-async def webhook(candle: Candle, x_webhook_secret: str | None = Header(default=None),
+async def webhook(request: Request, x_webhook_secret: str | None = Header(default=None),
                   key: str | None = Query(default=None)):
     import secrets
     expected = os.getenv("WEBHOOK_SECRET", "")
     supplied = x_webhook_secret or key
     if not expected or not supplied or not secrets.compare_digest(supplied, expected):
         raise HTTPException(status_code=401, detail="Invalid webhook secret")
+    # TradingView sends a valid JSON body as text/plain when it does not treat the
+    # alert message as JSON. FastAPI would answer 422 before this handler ran.
+    try:
+        payload = json.loads((await request.body()).decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise HTTPException(status_code=422, detail="Webhook body is not valid JSON")
+    try:
+        candle = Candle.model_validate(payload)
+    except ValidationError as exc:
+        detail = [{"loc": list(err["loc"]), "msg": err["msg"]} for err in exc.errors()]
+        log.info("Rejected webhook candle: %s", detail)
+        raise HTTPException(status_code=422, detail=detail)
     # SQLite work is moved off the event loop; Telegram never runs in this handler.
     return await asyncio.to_thread(process_candle, candle)

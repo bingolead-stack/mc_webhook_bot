@@ -1,27 +1,30 @@
 //@version=6
-indicator("MC Candle | 3-Day Close Bias + Webhook", overlay = true, max_labels_count = 500)
+indicator("MC Candle Alerts (4H)", overlay = true, max_labels_count = 500)
 
-// Use ONLY on a 4-hour chart. Every completed bar sends OHLC to Python,
-// whether or not it is an MC. Python needs the bars to build its history.
-int biasBars = input.int(18, "Bias window (4H candles)", minval = 2, maxval = 100)
-bool showBias = input.bool(true, "Color chart background by bias")
-bool isFourHour = timeframe.isminutes and timeframe.multiplier == 240
-int barMs = 4 * 60 * 60 * 1000
+// Strategy: compare first and last closes in 18 earlier four-hour bars.
+// Exclude both the current signal candle and its immediate predecessor.
+int biasBars = input.int(18, "3-day bias bars", minval = 2, maxval = 100)
+bool showBias = input.bool(true, "Show bias background")
+bool enableBullish = input.bool(true, "Enable bullish MC alerts")
+bool enableBearish = input.bool(true, "Enable bearish MC alerts")
 
-// Exclude the previous candle and current candle from bias: compare closes
-// at [biasBars + 1] (oldest) and [2] (newest).
-bool ready = isFourHour and not na(close[biasBars + 1])
-bool consecutive = ready
-if ready
+bool correctTimeframe = timeframe.isminutes and timeframe.multiplier == 240
+int fourHoursMs = 4 * 60 * 60 * 1000
+bool enoughBars = correctTimeframe and not na(close[biasBars + 1])
+bool consecutive = enoughBars
+
+// Keep the exact 4-hour continuity requirement from the earlier version.
+// Forex/stock market session breaks temporarily disable signals.
+if enoughBars
     for i = 0 to biasBars
-        if na(time[i + 1]) or time[i] - time[i + 1] != barMs
+        if na(time[i + 1]) or time[i] - time[i + 1] != fourHoursMs
             consecutive := false
 
 bool bullishBias = consecutive and close[2] > close[biasBars + 1]
 bool bearishBias = consecutive and close[2] < close[biasBars + 1]
 
-// User-specified conditions: full-range engulfing and body-color filters
-// are NOT required.
+// Only the wick break and close reversal specified by the user.
+// No full-range engulfing or candle-body-color requirement.
 bool bullishMC = barstate.isconfirmed and bullishBias and low < low[1] and close > close[1]
 bool bearishMC = barstate.isconfirmed and bearishBias and high > high[1] and close < close[1]
 
@@ -29,9 +32,14 @@ plotshape(bullishMC, title = "Bullish MC", style = shape.labelup, location = loc
 plotshape(bearishMC, title = "Bearish MC", style = shape.labeldown, location = location.abovebar, color = color.red, text = "MC ▼", textcolor = color.white, size = size.tiny)
 bgcolor(showBias and bullishBias ? color.new(color.green, 94) : showBias and bearishBias ? color.new(color.red, 94) : na)
 
-// One webhook per completed candle, not only MC candles. The Python service
-// validates and detects MC itself; this keeps its history synchronized.
-if barstate.isconfirmed and isFourHour
+// Can be selected independently from TradingView's alert creation dialog.
+alertcondition(enableBullish and bullishMC, title = "Bullish MC", message = "BULLISH MC | {{ticker}} | 4H | Close: {{close}}")
+alertcondition(enableBearish and bearishMC, title = "Bearish MC", message = "BEARISH MC | {{ticker}} | 4H | Close: {{close}}")
+
+// Select 'Any alert() function call' for one combined dynamic JSON alert.
+// Sends ONLY when an MC is detected, never on normal candles.
+if (enableBullish and bullishMC) or (enableBearish and bearishMC)
+    string direction = bullishMC ? "bullish" : "bearish"
     string isoTime = str.replace_all(str.format_time(time, "yyyy-MM-dd HH:mm:ss", "UTC+0"), " ", "T") + "Z"
-    string payload = '{"symbol":"' + syminfo.tickerid + '","timeframe":"4h","timestamp":"' + isoTime + '","open":' + str.tostring(open, format.mintick) + ',"high":' + str.tostring(high, format.mintick) + ',"low":' + str.tostring(low, format.mintick) + ',"close":' + str.tostring(close, format.mintick) + '}'
+    string payload = '{"event":"mc_candle","direction":"' + direction + '","symbol":"' + syminfo.tickerid + '","timeframe":"4h","timestamp":"' + isoTime + '","open":' + str.tostring(open, format.mintick) + ',"high":' + str.tostring(high, format.mintick) + ',"low":' + str.tostring(low, format.mintick) + ',"close":' + str.tostring(close, format.mintick) + '}'
     alert(payload, alert.freq_once_per_bar_close)

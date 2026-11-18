@@ -122,6 +122,50 @@ class StrategyTests(unittest.TestCase):
     def test_no_history_no_signal(self):
         self.assertIsNone(self.send(0, 100, 102, 99, 101)["mc"])
 
+    def test_tradingview_symbol_and_early_close(self):
+        from pydantic import ValidationError
+        early = datetime.now(timezone.utc) - timedelta(hours=4) + timedelta(seconds=30)
+        candle = app.Candle(symbol="CME_MINI:ES1!", timestamp=early, open=5000, high=5010, low=4990, close=5005)
+        self.assertEqual(candle.symbol, "CME_MINI:ES1!")
+        with self.assertRaises(ValidationError):
+            app.Candle(symbol="EURUSD", timestamp=datetime.now(timezone.utc) - timedelta(minutes=10),
+                       open=1, high=2, low=0.5, close=1.5)
+
+    def test_text_plain_webhook_accepts_json_body(self):
+        from fastapi.testclient import TestClient
+        original_secret = os.environ.get("WEBHOOK_SECRET")
+        original_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+        original_chat = os.environ.get("TELEGRAM_CHAT_ID")
+        os.environ["WEBHOOK_SECRET"] = "test-secret"
+        os.environ["TELEGRAM_BOT_TOKEN"] = ""
+        os.environ["TELEGRAM_CHAT_ID"] = ""
+        closed = (datetime.now(timezone.utc) - timedelta(hours=4) + timedelta(seconds=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        body = ('{"symbol":"CME_MINI:ES1!","timeframe":"4h","timestamp":"%s",'
+                '"open":5000,"high":5010,"low":4990,"close":5005}' % closed)
+        try:
+            with TestClient(app.app) as client:
+                response = client.post(
+                    "/webhook?key=test-secret",
+                    content=body,
+                    headers={"Content-Type": "text/plain"},
+                )
+        finally:
+            if original_secret is None:
+                os.environ.pop("WEBHOOK_SECRET", None)
+            else:
+                os.environ["WEBHOOK_SECRET"] = original_secret
+            if original_token is None:
+                os.environ.pop("TELEGRAM_BOT_TOKEN", None)
+            else:
+                os.environ["TELEGRAM_BOT_TOKEN"] = original_token
+            if original_chat is None:
+                os.environ.pop("TELEGRAM_CHAT_ID", None)
+            else:
+                os.environ["TELEGRAM_CHAT_ID"] = original_chat
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["symbol"], "CME_MINI:ES1!")
+        self.assertEqual(response.json()["status"], "accepted")
+
 
 if __name__ == "__main__":
     unittest.main()
